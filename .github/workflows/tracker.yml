@@ -39,6 +39,11 @@ jobs:
           PREDICTSTREET_API_KEY: ${{ secrets.PREDICTSTREET_API_KEY }}
           ETH_ADDRESS: ${{ vars.ETH_ADDRESS }}
           WRITE_FLOWS: ${{ vars.WRITE_FLOWS }}
+          # --- доступ к эксплореру (если ловишь HTTP 403) ---
+          EXPLORER_USER_AGENT: ${{ vars.EXPLORER_USER_AGENT }}
+          USE_CLOUDSCRAPER: ${{ vars.USE_CLOUDSCRAPER }}
+          PROXY_URL: ${{ secrets.PROXY_URL }}
+          EXPLORER_API_KEY: ${{ secrets.EXPLORER_API_KEY }}
         run: python tracker.py
 
       - name: Upload report.csv (artifact)
