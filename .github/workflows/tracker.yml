@@ -1,0 +1,50 @@
+name: ADI PredictStreet tracker
+
+on:
+  # Ручной запуск из вкладки Actions
+  workflow_dispatch:
+  # Раз в день в 03:00 UTC. Меняй cron под себя (https://crontab.guru).
+  schedule:
+    - cron: "0 3 * * *"
+
+# Чтобы параллельные прогоны не дрались за одну таблицу
+concurrency:
+  group: adi-tracker
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run tracker
+        env:
+          # --- обязательные ---
+          GCP_SERVICE_ACCOUNT_JSON: ${{ secrets.GCP_SERVICE_ACCOUNT_JSON }}
+          SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
+          # --- опциональные (можно удалить, если не нужны) ---
+          PERIOD_START: ${{ vars.PERIOD_START }}
+          PREDICTSTREET_API_KEY: ${{ secrets.PREDICTSTREET_API_KEY }}
+          ETH_ADDRESS: ${{ vars.ETH_ADDRESS }}
+          WRITE_FLOWS: ${{ vars.WRITE_FLOWS }}
+        run: python tracker.py
+
+      - name: Upload report.csv (artifact)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: report-csv
+          path: report.csv
+          if-no-files-found: ignore
