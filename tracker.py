@@ -59,7 +59,8 @@ REPORT_TAB = os.environ.get("REPORT_TAB", "report")
 AGGREGATE_TAB = os.environ.get("AGGREGATE_TAB", "aggregate")
 STATE_TAB = os.environ.get("STATE_TAB", "state")
 FLOWS_TAB = os.environ.get("FLOWS_TAB", "flows")
-WRITE_FLOWS = os.environ.get("WRITE_FLOWS", "1").strip() not in ("0", "false", "False", "")
+# Пустая строка (незаданная GitHub-переменная) трактуется как включено.
+WRITE_FLOWS = (os.environ.get("WRITE_FLOWS", "1").strip() or "1") not in ("0", "false", "False", "no", "off")
 
 # Локальный файл кошельков — используется, только если вкладка `wallets` пустая/недоступна.
 WALLET_FILE = os.environ.get("WALLET_FILE", "wallets.txt")
@@ -67,7 +68,8 @@ WALLET_FILE = os.environ.get("WALLET_FILE", "wallets.txt")
 LOCAL_REPORT_CSV = os.environ.get("LOCAL_REPORT_CSV", "report.csv")
 
 # --- Отчётный период (открытый: [start, сейчас]) ---
-PERIOD_START = os.environ.get("PERIOD_START", "2025-05-18T00:00:00Z")
+# Пустая строка (незаданная GitHub-переменная) -> дефолт, иначе будет ошибка парсинга.
+PERIOD_START = os.environ.get("PERIOD_START", "").strip() or "2025-05-18T00:00:00Z"
 
 # --- Сеть / эксплорер ---
 CHAIN_ID = 36900
@@ -232,7 +234,14 @@ def parse_ts(value):
                 dt = dt.replace(tzinfo=timezone.utc)
             return dt.astimezone(timezone.utc)
         except Exception:
-            return None
+            pass
+        for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%d.%m.%Y", "%d/%m/%Y", "%m/%d/%Y",
+                    "%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
+            try:
+                return datetime.strptime(value.strip(), fmt).replace(tzinfo=timezone.utc)
+            except Exception:
+                continue
+        return None
     return None
 
 
