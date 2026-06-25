@@ -132,11 +132,65 @@ ADDR_RE = re.compile(r"^0x[0-9a-fA-F]{40}$")
 ANY_ADDR_RE = re.compile(r"0x[0-9a-fA-F]{40}")
 ZERO_ADDR = "0x0000000000000000000000000000000000000000"
 
-SESSION = requests.Session()
-SESSION.headers.update({
-    "Accept": "application/json",
-    "User-Agent": "adi-wallet-tracker/3.0 (incremental-sheets)",
-})
+DEFAULT_UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+              "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+EXPLORER_USER_AGENT = os.environ.get("EXPLORER_USER_AGENT", "").strip() or DEFAULT_UA
+EXPLORER_API_KEY = os.environ.get("EXPLORER_API_KEY", "").strip()
+PROXY_URL = os.environ.get("PROXY_URL", "").strip()  # напр. http://user:pass@host:port
+USE_CLOUDSCRAPER = os.environ.get("USE_CLOUDSCRAPER", "0").strip() in ("1", "true", "True", "yes", "on")
+
+
+def _explorer_origin():
+    m = re.match(r"^(https?://[^/]+)", EXPLORER_API_BASE)
+    return m.group(1) if m else EXPLORER_API_BASE
+
+
+def _build_session():
+    """Сессия с браузерными заголовками; опционально cloudscraper и прокси."""
+    sess = None
+    if USE_CLOUDSCRAPER:
+        try:
+            import cloudscraper
+            sess = cloudscraper.create_scraper(
+                browser={"browser": "chrome", "platform": "windows", "mobile": False})
+            log.info("HTTP: используется cloudscraper")
+        except Exception as e:
+            log.warning("cloudscraper недоступен (%s), обычная сессия", e)
+    if sess is None:
+        sess = requests.Session()
+    origin = _explorer_origin()
+    sess.headers.update({
+        "User-Agent": EXPLORER_USER_AGENT,
+        "Accept": "application/json, text/plain, */*",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Referer": origin + "/",
+        "Origin": origin,
+        "Connection": "keep-alive",
+        "Sec-Fetch-Dest": "empty",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Site": "same-origin",
+    })
+    extra = os.environ.get("EXTRA_HEADERS_JSON", "").strip()
+    if extra:
+        try:
+            sess.headers.update(json.loads(extra))
+        except Exception as e:
+            log.warning("EXTRA_HEADERS_JSON не разобран: %s", e)
+    if PROXY_URL:
+        sess.proxies.update({"http": PROXY_URL, "https": PROXY_URL})
+        log.info("HTTP: используется прокси")
+    return sess
+
+
+SESSION = _build_session()
+_warned_403 = False
+
+
+def _maybe_api_key(params):
+    if EXPLORER_API_KEY:
+        params = dict(params or {})
+        params.setdefault("apikey", EXPLORER_API_KEY)
+    return params
 
 PS_CONTRACTS = {a.lower() for a in CONFIG_PREDICTSTREET_CONTRACTS if a}
 PS_LABELS = {
@@ -273,6 +327,8 @@ def cp_label(addr):
 # HTTP С RETRY
 # ============================================================================
 def http_get_json(url, params=None, ctx=""):
+    global _warned_403
+    params = _maybe_api_key(params)
     last = None
     for attempt in range(1, MAX_RETRIES + 1):
         try:
@@ -285,6 +341,15 @@ def http_get_json(url, params=None, ctx=""):
                 except ValueError:
                     return None
             if status == 404:
+                return None
+            if status == 403:
+                if not _warned_403:
+                    _warned_403 = True
+                    log.error("HTTP 403 от эксплорера. Вероятно блок по WAF/Cloudflare. "
+                              "Варианты: 1) задать EXPLORER_USER_AGENT под браузер; "
+                              "2) USE_CLOUDSCRAPER=1 (+ cloudscraper в requirements); "
+                              "3) PROXY_URL с residential-прокси; 4) EXPLORER_API_KEY, если эксплорер требует ключ. "
+                              "Диагностика: python tracker.py --check")
                 return None
             if status == 429 or 500 <= status < 600:
                 ra = r.headers.get("Retry-After")
@@ -1085,6 +1150,30 @@ def write_local_csv(report_rows):
         log.warning("Локальный CSV не записан: %s", e)
 
 
+def diagnostic_check():
+    """Быстрая проверка доступа к эксплореру: печатает статус и кусок ответа."""
+    probe = "0x9cb8142aEBBcdc60AF7c97Af897A67A8f3CA71C2"  # USDC-контракт (точно существует)
+    targets = [
+        ("v2 addresses", v2_url(f"addresses/{probe}")),
+        ("v2 txs", v2_url(f"addresses/{probe}/transactions")),
+        ("legacy /api balance", f"{EXPLORER_API_BASE}/api?module=account&action=balance&address={probe}"),
+    ]
+    print(f"UA: {EXPLORER_USER_AGENT}")
+    print(f"cloudscraper: {USE_CLOUDSCRAPER} | proxy: {'да' if PROXY_URL else 'нет'} | "
+          f"api_key: {'да' if EXPLORER_API_KEY else 'нет'}")
+    print("-" * 60)
+    for name, url in targets:
+        try:
+            r = SESSION.get(url, params=_maybe_api_key(None), timeout=REQUEST_TIMEOUT)
+            body = (r.text or "")[:160].replace("\n", " ")
+            print(f"[{r.status_code}] {name}\n      {body}")
+        except Exception as e:
+            print(f"[ERR] {name}: {e}")
+    print("-" * 60)
+    print("200 -> доступ есть. 403 -> WAF/Cloudflare (см. подсказку в логах). "
+          "Если 403 локально нет, а в Actions есть -> блок по IP дата-центра, нужен PROXY_URL.")
+
+
 # ============================================================================
 # MAIN
 # ============================================================================
@@ -1150,4 +1239,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    if "--check" in sys.argv:
+        diagnostic_check()
+    else:
+        main()
